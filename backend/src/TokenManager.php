@@ -93,6 +93,45 @@ class TokenManager
     }
 
     /**
+     * 获取令牌信息（不校验卡密状态）
+     * 用于心跳检测时区分卡密被封禁/删除/过期等具体情况，
+     * 仅在token不存在或token自身过期时返回null
+     *
+     * @param string $token 原始token
+     * @return array|null
+     */
+    public static function getTokenInfo(string $token): ?array
+    {
+        $tokenHash = self::hashToken($token);
+
+        // 查询token及关联卡密状态（LEFT JOIN保证卡密记录缺失时也能查到token）
+        $tokenInfo = Database::queryOne(
+            "SELECT t.*, k.status as key_status, k.expire_at as key_expire_at
+             FROM access_token t
+             LEFT JOIN license_key k ON t.key_id = k.id
+             WHERE t.token_hash = ?",
+            [$tokenHash]
+        );
+
+        if (!$tokenInfo) {
+            return null;
+        }
+
+        // 仅检查token自身是否过期，卡密状态由调用方判断具体原因
+        if (strtotime($tokenInfo['expire_at']) < time()) {
+            return null;
+        }
+
+        // 更新最后访问时间
+        Database::execute(
+            "UPDATE access_token SET last_seen_at = datetime('now', 'localtime') WHERE token_hash = ?",
+            [$tokenHash]
+        );
+
+        return $tokenInfo;
+    }
+
+    /**
      * 撤销令牌
      *
      * @param string $token 令牌

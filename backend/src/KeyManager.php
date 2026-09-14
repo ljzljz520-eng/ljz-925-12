@@ -115,10 +115,9 @@ class KeyManager
             $keyIds
         );
 
-        // 撤销这些卡密的所有token
-        foreach ($keyIds as $keyId) {
-            TokenManager::revokeKeyTokens($keyId);
-        }
+        // 注意：不再物理删除这些卡密的token。
+        // TokenManager::validateToken 会拒绝非 active 状态的卡密，受保护接口立即失效；
+        // 保留token记录可让心跳检测（Auth::ping）向前端返回“卡密已被封禁”的具体原因。
 
         // 记录管理员操作日志
         Logger::logAdminOp(
@@ -180,10 +179,9 @@ class KeyManager
             $keyIds
         );
 
-        // 撤销这些卡密的所有token
-        foreach ($keyIds as $keyId) {
-            TokenManager::revokeKeyTokens($keyId);
-        }
+        // 注意：不再物理删除这些卡密的token。
+        // TokenManager::validateToken 会拒绝非 active 状态的卡密，受保护接口立即失效；
+        // 保留token记录可让心跳检测（Auth::ping）向前端返回“卡密已被删除”的具体原因。
 
         // 记录管理员操作日志
         Logger::logAdminOp(

@@ -43,4 +43,5 @@ function resetTestDatabase() {
 
 module.exports = {
   resetTestDatabase,
+  execSql,
 };

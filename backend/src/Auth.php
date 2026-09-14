@@ -124,23 +124,31 @@ class Auth
 
     /**
      * 心跳检测
+     * 实时确认卡密是否仍然有效，封禁/删除/过期分别返回具体原因
      *
      * @param string $token 令牌
      * @return array Response格式
      */
     public static function ping(string $token): array
     {
-        $tokenInfo = TokenManager::validateToken($token);
+        // 使用不过滤卡密状态的查询，以便区分具体失效原因
+        $tokenInfo = TokenManager::getTokenInfo($token);
 
         if (!$tokenInfo) {
             Logger::logKeyUsage(null, 'ping', 'failed', 'Token无效或已过期');
             return Response::error(1002, '登录已过期，请重新验证');
         }
 
-        // 检查卡密状态
-        if ($tokenInfo['key_status'] !== 'active') {
-            Logger::logKeyUsage($tokenInfo['key_id'], 'ping', 'failed', '卡密已被封禁或删除');
-            return Response::error(1003, '卡密已被封禁或删除');
+        // 卡密已被封禁
+        if ($tokenInfo['key_status'] === 'banned') {
+            Logger::logKeyUsage($tokenInfo['key_id'], 'ping', 'failed', '卡密已被封禁');
+            return Response::error(1003, '卡密已被封禁');
+        }
+
+        // 卡密已被删除（含卡密记录不存在的情况）
+        if ($tokenInfo['key_status'] === 'deleted' || $tokenInfo['key_status'] === null) {
+            Logger::logKeyUsage($tokenInfo['key_id'], 'ping', 'failed', '卡密已被删除');
+            return Response::error(1001, '卡密已被删除');
         }
 
         // 检查卡密是否过期
@@ -159,7 +167,8 @@ class Auth
 
         return Response::success([
             'valid' => true,
-            'key_status' => $tokenInfo['key_status']
+            'key_status' => $tokenInfo['key_status'],
+            'key_expire_at' => $tokenInfo['key_expire_at']
         ]);
     }
 

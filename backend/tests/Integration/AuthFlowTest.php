@@ -243,6 +243,98 @@ class AuthFlowTest extends TestCase
     }
 
     /**
+     * 测试心跳检测：后台封禁后返回具体原因（1003）
+     */
+    public function testPingBannedKeyReturnsSpecificReason(): void
+    {
+        $adminId = $this->createTestAdmin();
+        $keyData = $this->createTestKey('PINGBAN00001', 'active', 30);
+
+        // 验证并获取token
+        $authResult = Auth::verifyKey($keyData['key_plain']);
+        $this->assertResponseSuccess($authResult);
+        $token = $authResult['data']['token'];
+
+        // 通过管理后台接口封禁卡密
+        \App\KeyManager::banKeys([$keyData['id']], $adminId);
+
+        // 心跳检测应返回1003及封禁原因
+        $pingResult = Auth::ping($token);
+        $this->assertResponseError($pingResult, 1003);
+        $this->assertStringContainsString('封禁', $pingResult['message']);
+
+        // token记录保留用于原因查询，但validateToken必须拒绝（受保护接口立即失效）
+        $validateResult = Auth::validateToken($token);
+        $this->assertResponseError($validateResult, 1002);
+    }
+
+    /**
+     * 测试心跳检测：后台删除后返回具体原因（1001）
+     */
+    public function testPingDeletedKeyReturnsSpecificReason(): void
+    {
+        $adminId = $this->createTestAdmin();
+        $keyData = $this->createTestKey('PINGDEL00001', 'active', 30);
+
+        // 验证并获取token
+        $authResult = Auth::verifyKey($keyData['key_plain']);
+        $this->assertResponseSuccess($authResult);
+        $token = $authResult['data']['token'];
+
+        // 通过管理后台接口删除卡密
+        \App\KeyManager::deleteKeys([$keyData['id']], $adminId);
+
+        // 心跳检测应返回1001及删除原因
+        $pingResult = Auth::ping($token);
+        $this->assertResponseError($pingResult, 1001);
+        $this->assertStringContainsString('删除', $pingResult['message']);
+
+        // validateToken同样必须拒绝
+        $validateResult = Auth::validateToken($token);
+        $this->assertResponseError($validateResult, 1002);
+    }
+
+    /**
+     * 测试心跳检测：卡密过期返回具体原因并自动封禁
+     */
+    public function testPingExpiredKeyReturnsSpecificReason(): void
+    {
+        $keyData = $this->createTestKey('PINGEXP00001', 'active', 30);
+
+        // 验证并获取token
+        $authResult = Auth::verifyKey($keyData['key_plain']);
+        $this->assertResponseSuccess($authResult);
+        $token = $authResult['data']['token'];
+
+        // 手动将卡密设置为已过期
+        Database::execute(
+            "UPDATE license_key SET expire_at = datetime('now', '-1 days', 'localtime') WHERE id = ?",
+            [$keyData['id']]
+        );
+
+        // 心跳检测应返回1001及过期原因
+        $pingResult = Auth::ping($token);
+        $this->assertResponseError($pingResult, 1001);
+        $this->assertStringContainsString('过期', $pingResult['message']);
+
+        // 过期卡密应被自动封禁
+        $keyInfo = Database::queryOne(
+            'SELECT status FROM license_key WHERE id = ?',
+            [$keyData['id']]
+        );
+        $this->assertEquals('banned', $keyInfo['status']);
+    }
+
+    /**
+     * 测试心跳检测：无效token返回1002
+     */
+    public function testPingInvalidToken(): void
+    {
+        $pingResult = Auth::ping('non_existing_token_abcdef');
+        $this->assertResponseError($pingResult, 1002);
+    }
+
+    /**
      * 测试空token验证
      */
     public function testValidateEmptyToken(): void

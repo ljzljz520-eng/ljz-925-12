@@ -58,7 +58,7 @@
 ```
 用户输入卡密 → HMAC-SHA256 哈希 → 数据库匹配 → 生成 Token → 返回前端
 前端保存 Token → 每次请求携带 → 后端验证 → 检查有效期 → 返回结果
-心跳检测（30秒） → 验证 Token → 检查卡密状态 → 封禁/删除自动退出
+心跳检测（30秒） → 验证 Token → 检查卡密状态 → 封禁/删除/过期立即退出并说明原因，网络异常自动重试不误踢
 ```
 
 #### 2. 数据加密
@@ -99,7 +99,7 @@ if_modified_since off;
 ### 用户前端
 
 - ✅ **路由预验证机制** - `/` 根据 localStorage token 自动跳转到 `/gate` 或 `/home`
-- ✅ **30秒心跳检测** - 实时检测卡密状态
+- ✅ **30秒实时卡密检测** - 封禁/删除/过期立即退出并提示原因，网络异常自动重试不误踢
 - ✅ **防调试保护** - 禁用F12、右键、查看源代码
 - ✅ **移动端适配** - 响应式设计
 - ✅ Token认证机制（12小时有效期）
@@ -265,7 +265,7 @@ POST /api/auth/verify-key
 #### 2. 心跳检测流程
 
 ```text
-前端每30秒执行
+进入内容页立即执行一次，之后每30秒执行
     ↓
 GET /api/auth/ping (携带 token)
     ↓
@@ -273,13 +273,14 @@ GET /api/auth/ping (携带 token)
     ↓
 检查 token 是否过期
     ↓
-检查关联卡密状态
+检查关联卡密状态（封禁/删除/过期分别返回具体原因）
     ↓
-返回 {valid: true/false, key_status: 'active/banned/deleted'}
+返回 {valid: true/false, key_status: 'active/banned/deleted', key_expire_at}
     ↓
 前端判断结果
     ↓
-如果 invalid 或 banned/deleted → 清除 token → 跳转到 Gate 页面
+卡密失效（1001/1002/1003）→ 清除 token → 跳转到 Gate 页面并展示具体原因
+网络异常/服务端临时故障 → 提示自动重试，连续失败加强提示，不清除 token 不踢出
 ```
 
 #### 3. 卡密管理流程
@@ -531,9 +532,9 @@ CREATE INDEX idx_problem_type ON templates(problem_type_id);
 **错误码规范：**
 
 - **1xxx**: 认证相关错误
-  - 1001: 卡密无效或已失效
+  - 1001: 卡密无效或已失效（心跳检测时具体为：卡密已被删除 / 卡密已过期）
   - 1002: 登录已过期，请重新验证
-  - 1003: 卡密已被封禁或删除
+  - 1003: 卡密已被封禁
   - 1004: 尝试次数过多，请稍后再试
 - **2xxx**: 业务相关错误
   - 2001: 生成失败，请重试
@@ -597,9 +598,19 @@ Authorization: Bearer <token>
 	"message": "检测成功",
 	"data": {
 		"valid": true,
-		"key_status": "active"
+		"key_status": "active",
+		"key_expire_at": "2026-02-13 12:00:00"
 	}
 }
+```
+
+**错误响应（卡密失效时返回具体原因，前端据此退出并提示）：**
+
+```json
+{ "code": 1003, "message": "卡密已被封禁", "data": null }
+{ "code": 1001, "message": "卡密已被删除", "data": null }
+{ "code": 1001, "message": "卡密已过期", "data": null }
+{ "code": 1002, "message": "登录已过期，请重新验证", "data": null }
 ```
 
 #### POST /api/auth/logout
@@ -811,19 +822,26 @@ if (!token) {
 #### 心跳检测 (home.js)
 
 ```javascript
-const interval = setInterval(async () => {
+// 进入内容页立即检测一次，之后每30秒检测一次
+const checkKeyStatus = async () => {
 	try {
-		const result = await API.get('/auth/ping')
-		if (!result.valid || result.key_status !== 'active') {
+		await API.get('/auth/ping')
+		// 成功：重置网络失败计数
+	} catch (error) {
+		if (!error.isNetworkError && [1001, 1002, 1003].includes(error.code)) {
+			// 卡密封禁/删除/过期/登录失效：清除 token，携带原因退出到输入页
 			localStorage.removeItem('token')
 			localStorage.removeItem('token_expire_at')
-			Toast.show('登录已失效，请重新验证', 'warning')
+			sessionStorage.setItem('gate_kick_reason', error.message)
 			window.location.href = '/gate'
+		} else {
+			// 网络异常：仅提示自动重试，不踢出用户
+			Toast.show('网络连接异常，正在自动重试…', 'warning')
 		}
-	} catch (error) {
-		console.error('心跳检测失败:', error)
 	}
-}, 30000)
+}
+checkKeyStatus()
+const interval = setInterval(checkKeyStatus, 30000)
 ```
 
 ### 后端技术栈
@@ -1339,8 +1357,9 @@ SELECT * FROM license_key LIMIT 5;
 3. **预验证机制**
    - 在进入业务页面前验证卡密
    - 验证通过后才加载应用代码
-   - 实时心跳检测（30秒）
-   - Token失效自动退出
+   - 实时卡密检测（进入页面立即一次，之后每30秒）
+   - 封禁/删除/过期立即退出并展示具体原因
+   - 网络异常自动重试，短暂故障不误踢用户
 
 ### 后端安全
 
